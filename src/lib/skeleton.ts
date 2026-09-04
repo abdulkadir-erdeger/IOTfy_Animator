@@ -64,6 +64,10 @@ export function computeWorldJoints(figure: FigurePose): WorldJoint[] {
       length: joint.length * figure.scale,
       visible: joint.visible !== false,
       dynamic: joint.dynamic !== false,
+      fill: joint.kind === 'ring' ? joint.fill ?? 'clear' : joint.fill ?? 'solid',
+      cap: joint.cap ?? 'round',
+      color: joint.color ?? null,
+      opacity: joint.opacity ?? 1,
     }
   })
 }
@@ -144,6 +148,27 @@ export function collectDescendants(joints: Joint[], jointId: string): Set<string
     }
   }
   return ids
+}
+
+export function collectAncestors(joints: Joint[], jointId: string): string[] {
+  const byId = new Map(joints.map((joint) => [joint.id, joint]))
+  const path: string[] = []
+  let current: string | null = jointId
+  const seen = new Set<string>()
+  while (current && !seen.has(current)) {
+    path.push(current)
+    seen.add(current)
+    current = byId.get(current)?.parentId ?? null
+  }
+  return path
+}
+
+export function computeLocalMap(joints: Joint[]): Map<string, { x: number; y: number; angle: number }> {
+  const map = new Map<string, { x: number; y: number; angle: number }>()
+  for (const joint of joints) {
+    map.set(joint.id, localPosition(joints, joint.id))
+  }
+  return map
 }
 
 export function lerp(a: number, b: number, t: number): number {

@@ -19,8 +19,22 @@ import type {
 } from '../types'
 import { cloneFigure, createFigureFromTemplate, emptyFigure } from '../lib/figures'
 import { cloneFrame, makeInbetweenFrames } from '../lib/interpolate'
-import { addLengthForKind } from '../lib/segment'
-import { collectDescendants, screenToLocal, updateJointFromPointer } from '../lib/skeleton'
+import {
+  addPolygon,
+  colorBranch,
+  colorPolygon,
+  deletePolygon,
+  deleteSegment,
+  duplicateOnto,
+  flipJoints,
+  patchJoints,
+  placeSegment,
+  reorderJoints,
+  rerootFigure,
+  splitSegment,
+} from '../lib/builderOps'
+import { nextCap, nextFill, resolvedCap, resolvedFill, toggledKind } from '../lib/segment'
+import { screenToLocal, updateJointFromPointer } from '../lib/skeleton'
 import { createDefaultProject, loadProject, saveProject } from '../lib/project'
 import { uid } from '../lib/ids'
 
@@ -35,6 +49,8 @@ interface AnimatorState {
   view: AppView
   builderDraft: FigurePose | null
   builderSourceId: string | null
+  builderUndo: FigurePose[]
+  builderRedo: FigurePose[]
 }
 
 type Action =
@@ -65,18 +81,27 @@ type Action =
   | { type: 'reorder-figure'; direction: 'front' | 'back' }
   | { type: 'open-builder'; mode: 'new' | 'edit' }
   | { type: 'close-builder' }
-  | { type: 'set-builder-draft'; figure: FigurePose }
-  | { type: 'builder-add-joint'; kind: Joint['kind'] }
-  | { type: 'builder-delete-joint' }
-  | { type: 'builder-duplicate-joint' }
-  | { type: 'builder-patch-joint'; patch: Partial<Joint> }
-  | { type: 'builder-reorder-joint'; direction: 'front' | 'back' }
-  | { type: 'builder-flip-joint' }
-  | { type: 'builder-color'; color: string }
-  | { type: 'builder-thickness'; value: number }
-  | { type: 'builder-move-origin'; x: number; y: number }
-  | { type: 'builder-drag-joint'; jointId: string; x: number; y: number }
+  | { type: 'builder-new' }
+  | { type: 'builder-undo' }
+  | { type: 'builder-redo' }
   | { type: 'builder-rename'; name: string }
+  | { type: 'builder-place-joint'; kind: Joint['kind']; parentId: string; x: number; y: number }
+  | { type: 'builder-delete'; branch: boolean }
+  | { type: 'builder-duplicate-onto'; parentId: string; branch: boolean; mirror: boolean }
+  | { type: 'builder-patch'; patch: Partial<Joint>; branch: boolean }
+  | { type: 'builder-toggle-kind'; branch: boolean }
+  | { type: 'builder-cycle-fill'; branch: boolean }
+  | { type: 'builder-cycle-cap'; branch: boolean }
+  | { type: 'builder-nudge-thickness'; delta: number; branch: boolean }
+  | { type: 'builder-set-origin' }
+  | { type: 'builder-split' }
+  | { type: 'builder-reorder'; direction: 'front' | 'back' | 'up' | 'down'; branch: boolean }
+  | { type: 'builder-flip'; vertical: boolean; branch: boolean }
+  | { type: 'builder-color'; color: string; branch: boolean }
+  | { type: 'builder-add-polygon'; jointIds: string[] }
+  | { type: 'builder-delete-polygon' }
+  | { type: 'builder-move-origin'; x: number; y: number }
+  | { type: 'builder-drag-joint'; jointId: string; x: number; y: number; checkpoint?: boolean }
   | { type: 'save-builder' }
 
 function currentFrame(state: AnimatorState) {
@@ -100,6 +125,39 @@ function selectedFigure(state: AnimatorState): FigurePose | undefined {
   return frame?.figures.find((figure) => figure.id === state.selection.figureId)
 }
 
+function pushBuilderHistory(state: AnimatorState): AnimatorState {
+  if (!state.builderDraft) return state
+  return {
+    ...state,
+    builderUndo: [...state.builderUndo, cloneFigure(state.builderDraft)].slice(-60),
+    builderRedo: [],
+  }
+}
+
+function setBuilderDraft(
+  state: AnimatorState,
+  figure: FigurePose,
+  extra?: Partial<Pick<AnimatorState, 'selection'>>,
+): AnimatorState {
+  return {
+    ...pushBuilderHistory(state),
+    builderDraft: figure,
+    ...extra,
+  }
+}
+
+function clearBuilder(state: AnimatorState, extra: Partial<AnimatorState> = {}): AnimatorState {
+  return {
+    ...state,
+    view: 'studio',
+    builderDraft: null,
+    builderSourceId: null,
+    builderUndo: [],
+    builderRedo: [],
+    ...extra,
+  }
+}
+
 function reducer(state: AnimatorState, action: Action): AnimatorState {
   switch (action.type) {
     case 'hydrate':
@@ -114,6 +172,8 @@ function reducer(state: AnimatorState, action: Action): AnimatorState {
         view: 'studio',
         builderDraft: null,
         builderSourceId: null,
+        builderUndo: [],
+        builderRedo: [],
       }
     case 'new-project': {
       const project = createDefaultProject()
@@ -125,6 +185,8 @@ function reducer(state: AnimatorState, action: Action): AnimatorState {
         playing: false,
         view: 'studio',
         builderDraft: null,
+        builderUndo: [],
+        builderRedo: [],
       }
     }
     case 'set-frame':
@@ -325,140 +387,211 @@ function reducer(state: AnimatorState, action: Action): AnimatorState {
         playing: false,
         builderDraft: source,
         builderSourceId: action.mode === 'edit' && selected ? selected.id : null,
+        builderUndo: [],
+        builderRedo: [],
         selection: {
           figureId: source.id,
           jointId: source.joints[0]?.id ?? null,
+          polygonId: null,
         },
       }
     }
     case 'close-builder':
-      return {
-        ...state,
-        view: 'studio',
-        builderDraft: null,
-        builderSourceId: null,
-        selection: { ...state.selection, jointId: null },
-      }
-    case 'set-builder-draft':
-      return { ...state, builderDraft: action.figure }
-    case 'builder-add-joint': {
+      return clearBuilder(state, { selection: { ...state.selection, jointId: null, polygonId: null } })
+    case 'builder-new': {
       if (!state.builderDraft) return state
-      const parentId =
-        state.selection.jointId &&
-        state.builderDraft.joints.some((joint) => joint.id === state.selection.jointId)
-          ? state.selection.jointId
-          : state.builderDraft.joints[0]?.id
-      if (!parentId) return state
-      const preset = addLengthForKind(action.kind)
-      const joint: Joint = {
-        id: uid('joint'),
-        parentId,
-        length: preset.length,
-        angle: preset.angle,
-        kind: action.kind,
-        thickness: preset.thickness,
-        visible: true,
-        dynamic: true,
-      }
-      const figure = {
-        ...state.builderDraft,
-        joints: [...state.builderDraft.joints, joint],
-      }
+      const source = emptyFigure(state.project.canvasWidth / 2, state.project.canvasHeight / 2, 1)
       return {
-        ...state,
-        builderDraft: figure,
-        selection: { figureId: figure.id, jointId: joint.id },
+        ...pushBuilderHistory(state),
+        builderDraft: source,
+        builderSourceId: null,
+        selection: { figureId: source.id, jointId: source.joints[0]?.id ?? null, polygonId: null },
       }
     }
-    case 'builder-delete-joint': {
-      if (!state.builderDraft || !state.selection.jointId) return state
-      const target = state.builderDraft.joints.find((joint) => joint.id === state.selection.jointId)
-      if (!target?.parentId) return state
-      const removeIds = collectDescendants(state.builderDraft.joints, target.id)
+    case 'builder-undo': {
+      if (!state.builderDraft || state.builderUndo.length === 0) return state
+      const previous = state.builderUndo[state.builderUndo.length - 1]
       return {
         ...state,
-        builderDraft: {
-          ...state.builderDraft,
-          joints: state.builderDraft.joints.filter((joint) => !removeIds.has(joint.id)),
-        },
-        selection: { figureId: state.builderDraft.id, jointId: target.parentId },
-      }
-    }
-    case 'builder-duplicate-joint': {
-      if (!state.builderDraft || !state.selection.jointId) return state
-      const target = state.builderDraft.joints.find((joint) => joint.id === state.selection.jointId)
-      if (!target?.parentId) return state
-      const copy: Joint = {
-        ...target,
-        id: uid('joint'),
-        angle: target.angle + 0.4,
-      }
-      const figure = {
-        ...state.builderDraft,
-        joints: [...state.builderDraft.joints, copy],
-      }
-      return {
-        ...state,
-        builderDraft: figure,
-        selection: { figureId: figure.id, jointId: copy.id },
-      }
-    }
-    case 'builder-patch-joint': {
-      if (!state.builderDraft || !state.selection.jointId) return state
-      const target = state.builderDraft.joints.find((joint) => joint.id === state.selection.jointId)
-      if (!target?.parentId) return state
-      return {
-        ...state,
-        builderDraft: {
-          ...state.builderDraft,
-          joints: state.builderDraft.joints.map((joint) =>
-            joint.id === state.selection.jointId ? { ...joint, ...action.patch, id: joint.id, parentId: joint.parentId } : joint,
-          ),
+        builderDraft: previous,
+        builderUndo: state.builderUndo.slice(0, -1),
+        builderRedo: [...state.builderRedo, cloneFigure(state.builderDraft)].slice(-60),
+        selection: {
+          figureId: previous.id,
+          jointId: previous.joints.some((joint) => joint.id === state.selection.jointId)
+            ? state.selection.jointId
+            : previous.joints[0]?.id ?? null,
+          polygonId: null,
         },
       }
     }
-    case 'builder-reorder-joint': {
-      if (!state.builderDraft || !state.selection.jointId) return state
-      const joints = [...state.builderDraft.joints]
-      const index = joints.findIndex((joint) => joint.id === state.selection.jointId)
-      if (index <= 0) return state
-      const [moved] = joints.splice(index, 1)
-      if (action.direction === 'front') joints.push(moved)
-      else joints.splice(1, 0, moved)
+    case 'builder-redo': {
+      if (!state.builderDraft || state.builderRedo.length === 0) return state
+      const next = state.builderRedo[state.builderRedo.length - 1]
       return {
         ...state,
-        builderDraft: { ...state.builderDraft, joints },
-      }
-    }
-    case 'builder-flip-joint': {
-      if (!state.builderDraft || !state.selection.jointId) return state
-      const target = state.builderDraft.joints.find((joint) => joint.id === state.selection.jointId)
-      if (!target?.parentId) return state
-      return {
-        ...state,
-        builderDraft: {
-          ...state.builderDraft,
-          joints: state.builderDraft.joints.map((joint) =>
-            joint.id === state.selection.jointId ? { ...joint, angle: -joint.angle } : joint,
-          ),
+        builderDraft: next,
+        builderRedo: state.builderRedo.slice(0, -1),
+        builderUndo: [...state.builderUndo, cloneFigure(state.builderDraft)].slice(-60),
+        selection: {
+          figureId: next.id,
+          jointId: next.joints.some((joint) => joint.id === state.selection.jointId)
+            ? state.selection.jointId
+            : next.joints[0]?.id ?? null,
+          polygonId: null,
         },
       }
+    }
+    case 'builder-place-joint': {
+      if (!state.builderDraft) return state
+      const local = screenToLocal(state.builderDraft, action.x, action.y)
+      const placed = placeSegment(state.builderDraft, action.kind, action.parentId, local.x, local.y)
+      if (!placed) return state
+      return setBuilderDraft(state, placed.figure, {
+        selection: { figureId: placed.figure.id, jointId: placed.jointId, polygonId: null },
+      })
+    }
+    case 'builder-delete': {
+      if (!state.builderDraft) return state
+      if (state.selection.polygonId) {
+        return setBuilderDraft(state, deletePolygon(state.builderDraft, state.selection.polygonId), {
+          selection: { figureId: state.builderDraft.id, jointId: state.selection.jointId, polygonId: null },
+        })
+      }
+      if (!state.selection.jointId) return state
+      const next = deleteSegment(state.builderDraft, state.selection.jointId, action.branch)
+      if (!next) return state
+      const parentId = state.builderDraft.joints.find((joint) => joint.id === state.selection.jointId)?.parentId
+      return setBuilderDraft(state, next, {
+        selection: { figureId: next.id, jointId: parentId ?? next.joints[0]?.id ?? null, polygonId: null },
+      })
+    }
+    case 'builder-duplicate-onto': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const copied = duplicateOnto(
+        state.builderDraft,
+        state.selection.jointId,
+        action.parentId,
+        action.branch,
+        action.mirror,
+      )
+      if (!copied) return state
+      return setBuilderDraft(state, copied.figure, {
+        selection: { figureId: copied.figure.id, jointId: copied.jointId, polygonId: null },
+      })
+    }
+    case 'builder-patch': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const next = patchJoints(state.builderDraft, state.selection.jointId, action.patch, action.branch)
+      if (!next) return state
+      return setBuilderDraft(state, next)
+    }
+    case 'builder-toggle-kind': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const target = state.builderDraft.joints.find((joint) => joint.id === state.selection.jointId)
+      if (!target) return state
+      const next = patchJoints(
+        state.builderDraft,
+        state.selection.jointId,
+        { kind: toggledKind(target.kind) },
+        action.branch,
+      )
+      if (!next) return state
+      return setBuilderDraft(state, next)
+    }
+    case 'builder-cycle-fill': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const target = state.builderDraft.joints.find((joint) => joint.id === state.selection.jointId)
+      if (!target) return state
+      const next = patchJoints(
+        state.builderDraft,
+        state.selection.jointId,
+        { fill: nextFill(resolvedFill(target)), kind: target.kind === 'ring' ? 'circle' : target.kind },
+        action.branch,
+      )
+      if (!next) return state
+      return setBuilderDraft(state, next)
+    }
+    case 'builder-cycle-cap': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const target = state.builderDraft.joints.find((joint) => joint.id === state.selection.jointId)
+      if (!target) return state
+      const next = patchJoints(
+        state.builderDraft,
+        state.selection.jointId,
+        { cap: nextCap(resolvedCap(target)) },
+        action.branch,
+      )
+      if (!next) return state
+      return setBuilderDraft(state, next)
+    }
+    case 'builder-nudge-thickness': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const target = state.builderDraft.joints.find((joint) => joint.id === state.selection.jointId)
+      if (!target) return state
+      const next = patchJoints(
+        state.builderDraft,
+        state.selection.jointId,
+        { thickness: Math.max(0, Math.min(40, target.thickness + action.delta)) },
+        action.branch,
+      )
+      if (!next) return state
+      return setBuilderDraft(state, next)
+    }
+    case 'builder-set-origin': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const next = rerootFigure(state.builderDraft, state.selection.jointId)
+      if (!next) return state
+      return setBuilderDraft(state, next, {
+        selection: { figureId: next.id, jointId: state.selection.jointId, polygonId: null },
+      })
+    }
+    case 'builder-split': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const split = splitSegment(state.builderDraft, state.selection.jointId)
+      if (!split) return state
+      return setBuilderDraft(state, split.figure, {
+        selection: { figureId: split.figure.id, jointId: split.jointId, polygonId: null },
+      })
+    }
+    case 'builder-reorder': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const next = reorderJoints(state.builderDraft, state.selection.jointId, action.direction, action.branch)
+      if (!next) return state
+      return setBuilderDraft(state, next)
+    }
+    case 'builder-flip': {
+      if (!state.builderDraft || !state.selection.jointId) return state
+      const next = flipJoints(state.builderDraft, state.selection.jointId, action.vertical, action.branch)
+      if (!next) return state
+      return setBuilderDraft(state, next)
     }
     case 'builder-color': {
       if (!state.builderDraft) return state
-      return { ...state, builderDraft: { ...state.builderDraft, color: action.color } }
-    }
-    case 'builder-thickness': {
-      if (!state.builderDraft || !state.selection.jointId) return state
-      return {
-        ...state,
-        builderDraft: {
-          ...state.builderDraft,
-          joints: state.builderDraft.joints.map((joint) =>
-            joint.id === state.selection.jointId ? { ...joint, thickness: action.value } : joint,
-          ),
-        },
+      if (state.selection.polygonId) {
+        return setBuilderDraft(state, colorPolygon(state.builderDraft, state.selection.polygonId, action.color))
       }
+      if (!state.selection.jointId) {
+        return setBuilderDraft(state, { ...state.builderDraft, color: action.color })
+      }
+      const next = colorBranch(state.builderDraft, state.selection.jointId, action.color, action.branch)
+      if (!next) return state
+      return setBuilderDraft(state, next)
+    }
+    case 'builder-add-polygon': {
+      if (!state.builderDraft) return state
+      const next = addPolygon(state.builderDraft, action.jointIds)
+      if (!next) return state
+      const polygonId = next.polygons?.[next.polygons.length - 1]?.id ?? null
+      return setBuilderDraft(state, next, {
+        selection: { figureId: next.id, jointId: state.selection.jointId, polygonId },
+      })
+    }
+    case 'builder-delete-polygon': {
+      if (!state.builderDraft || !state.selection.polygonId) return state
+      return setBuilderDraft(state, deletePolygon(state.builderDraft, state.selection.polygonId), {
+        selection: { figureId: state.builderDraft.id, jointId: state.selection.jointId, polygonId: null },
+      })
     }
     case 'builder-move-origin': {
       if (!state.builderDraft) return state
@@ -469,18 +602,15 @@ function reducer(state: AnimatorState, action: Action): AnimatorState {
     }
     case 'builder-drag-joint': {
       if (!state.builderDraft) return state
-      const local = screenToLocal(state.builderDraft, action.x, action.y)
+      const base = action.checkpoint ? pushBuilderHistory(state) : state
+      const draft = base.builderDraft
+      if (!draft) return state
+      const local = screenToLocal(draft, action.x, action.y)
       return {
-        ...state,
+        ...base,
         builderDraft: {
-          ...state.builderDraft,
-          joints: updateJointFromPointer(
-            state.builderDraft.joints,
-            action.jointId,
-            local.x,
-            local.y,
-            false,
-          ),
+          ...draft,
+          joints: updateJointFromPointer(draft.joints, action.jointId, local.x, local.y, false),
         },
       }
     }
@@ -495,6 +625,7 @@ function reducer(state: AnimatorState, action: Action): AnimatorState {
         id: uid('tpl'),
         name: draft.name || 'Yeni Figür',
         joints: draft.joints.map((joint) => ({ ...joint })),
+        polygons: (draft.polygons ?? []).map((polygon) => ({ ...polygon, jointIds: [...polygon.jointIds] })),
       }
       const templates = [...state.project.templates, template]
       if (state.builderSourceId) {
@@ -503,17 +634,17 @@ function reducer(state: AnimatorState, action: Action): AnimatorState {
           (figures) =>
             figures.map((figure) =>
               figure.id === state.builderSourceId
-                ? { ...figure, joints: draft.joints.map((joint) => ({ ...joint })), name: draft.name }
+                ? {
+                    ...figure,
+                    joints: draft.joints.map((joint) => ({ ...joint })),
+                    polygons: template.polygons,
+                    name: draft.name,
+                    color: draft.color,
+                  }
                 : figure,
             ),
         )
-        return {
-          ...updated,
-          view: 'studio',
-          builderDraft: null,
-          builderSourceId: null,
-          selection: { figureId: state.builderSourceId, jointId: null },
-        }
+        return clearBuilder(updated, { selection: { figureId: state.builderSourceId, jointId: null } })
       }
       const frame = currentFrame(state)
       const zOrder = (frame?.figures.reduce((max, figure) => Math.max(max, figure.zOrder), 0) ?? 0) + 1
@@ -527,13 +658,7 @@ function reducer(state: AnimatorState, action: Action): AnimatorState {
         { ...state, project: { ...state.project, templates } },
         (figures) => [...figures, placed],
       )
-      return {
-        ...next,
-        view: 'studio',
-        builderDraft: null,
-        builderSourceId: null,
-        selection: { figureId: placed.id, jointId: null },
-      }
+      return clearBuilder(next, { selection: { figureId: placed.id, jointId: null } })
     }
     default:
       return state
@@ -551,6 +676,8 @@ const initialState: AnimatorState = {
   view: 'studio',
   builderDraft: null,
   builderSourceId: null,
+  builderUndo: [],
+  builderRedo: [],
 }
 
 interface AnimatorContextValue extends AnimatorState {

@@ -93,5 +93,6 @@ export function segmentKindName(kind: string, t: LanguageContextValue['t']) {
   if (kind === 'ring') return t('kindRing')
   if (kind === 'hex') return t('kindHex')
   if (kind === 'double') return t('kindDouble')
+  if (kind === 'polygon') return t('kindPolygon')
   return t('kindLine')
 }

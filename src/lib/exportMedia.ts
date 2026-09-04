@@ -69,7 +69,10 @@ function strokeSegment(
   y2: number,
   width: number,
   color: string,
+  cap: CanvasLineCap = 'round',
 ) {
+  if (width <= 0) return
+  ctx.lineCap = cap
   ctx.strokeStyle = color
   ctx.lineWidth = Math.max(1, width)
   ctx.beginPath()
@@ -80,44 +83,81 @@ function strokeSegment(
 
 function drawFigure(ctx: CanvasRenderingContext2D, figure: FigurePose) {
   const world = computeWorldJoints(figure)
-  ctx.lineCap = 'round'
+  const byId = new Map(world.map((joint) => [joint.id, joint]))
   ctx.lineJoin = 'round'
+
+  for (const polygon of figure.polygons ?? []) {
+    const points = polygon.jointIds
+      .map((id) => byId.get(id))
+      .filter((joint): joint is NonNullable<typeof joint> => Boolean(joint))
+    if (points.length < 3) continue
+    ctx.globalAlpha = polygon.opacity ?? 0.85
+    ctx.fillStyle = polygon.color || figure.color
+    ctx.beginPath()
+    points.forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.y)
+      else ctx.lineTo(point.x, point.y)
+    })
+    ctx.closePath()
+    ctx.fill()
+    ctx.globalAlpha = 1
+  }
+
   for (const joint of world) {
-    if (!joint.parentId || !joint.visible) continue
-    const color = figure.color
+    if (!joint.parentId || !joint.visible || joint.thickness <= 0) continue
+    ctx.globalAlpha = joint.opacity
+    const color = joint.color || figure.color
     const radius = segmentRadius(joint)
+    const cap = joint.cap
     if (joint.kind === 'double') {
       const offset = Math.max(3, joint.thickness * 0.55)
       const twin = parallelOffset(joint.parentX, joint.parentY, joint.x, joint.y, offset)
-      strokeSegment(ctx, twin.ax1, twin.ay1, twin.ax2, twin.ay2, joint.thickness, color)
-      strokeSegment(ctx, twin.bx1, twin.by1, twin.bx2, twin.by2, joint.thickness, color)
-    } else if (joint.kind === 'ring') {
-      strokeSegment(ctx, joint.parentX, joint.parentY, joint.x, joint.y, Math.max(3, joint.thickness * 0.55), color)
-      ctx.strokeStyle = color
-      ctx.lineWidth = Math.max(3, joint.thickness)
-      ctx.beginPath()
-      ctx.arc(joint.x, joint.y, radius, 0, Math.PI * 2)
-      ctx.stroke()
+      strokeSegment(ctx, twin.ax1, twin.ay1, twin.ax2, twin.ay2, joint.thickness, color, cap)
+      strokeSegment(ctx, twin.bx1, twin.by1, twin.bx2, twin.by2, joint.thickness, color, cap)
     } else if (joint.kind === 'hex') {
-      strokeSegment(ctx, joint.parentX, joint.parentY, joint.x, joint.y, Math.max(3, joint.thickness * 0.45), color)
+      strokeSegment(ctx, joint.parentX, joint.parentY, joint.x, joint.y, Math.max(2, joint.thickness * 0.45), color, cap)
       const points = hexPointList(joint.x, joint.y, radius)
-      ctx.fillStyle = color
       ctx.beginPath()
       points.forEach((point, index) => {
         if (index === 0) ctx.moveTo(point.x, point.y)
         else ctx.lineTo(point.x, point.y)
       })
       ctx.closePath()
-      ctx.fill()
-    } else if (joint.kind === 'circle') {
-      strokeSegment(ctx, joint.parentX, joint.parentY, joint.x, joint.y, joint.thickness, color)
-      ctx.fillStyle = color
+      if (joint.fill === 'clear') {
+        ctx.strokeStyle = color
+        ctx.lineWidth = Math.max(2, joint.thickness)
+        ctx.stroke()
+      } else {
+        ctx.fillStyle = joint.fill === 'white' ? '#ffffff' : color
+        ctx.fill()
+        if (joint.fill === 'white') {
+          ctx.strokeStyle = color
+          ctx.lineWidth = Math.max(2, joint.thickness)
+          ctx.stroke()
+        }
+      }
+    } else if (joint.kind === 'circle' || joint.kind === 'ring') {
+      const stem = joint.kind === 'ring' || joint.fill === 'clear' ? Math.max(2, joint.thickness * 0.55) : joint.thickness
+      strokeSegment(ctx, joint.parentX, joint.parentY, joint.x, joint.y, stem, color, cap)
       ctx.beginPath()
       ctx.arc(joint.x, joint.y, radius, 0, Math.PI * 2)
-      ctx.fill()
+      if (joint.fill === 'clear') {
+        ctx.strokeStyle = color
+        ctx.lineWidth = Math.max(2, joint.thickness)
+        ctx.stroke()
+      } else {
+        ctx.fillStyle = joint.fill === 'white' ? '#ffffff' : color
+        ctx.fill()
+        if (joint.fill === 'white') {
+          ctx.strokeStyle = color
+          ctx.lineWidth = Math.max(2, joint.thickness)
+          ctx.stroke()
+        }
+      }
     } else {
-      strokeSegment(ctx, joint.parentX, joint.parentY, joint.x, joint.y, joint.thickness, color)
+      strokeSegment(ctx, joint.parentX, joint.parentY, joint.x, joint.y, joint.thickness, color, cap)
     }
+    ctx.globalAlpha = 1
   }
 }
 

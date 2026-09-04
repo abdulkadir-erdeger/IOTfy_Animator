@@ -16,7 +16,10 @@ export function HelpModal({
       ? [
           { color: '#38bdf8', text: t('helpBuilderAdd') },
           { color: '#f59e0b', text: t('helpBuilderHandles') },
+          { color: '#a78bfa', text: t('helpBuilderPolygon') },
           { color: '#8b5cf6', text: t('helpBuilderEdit') },
+          { color: '#94a3b8', text: t('helpBuilderStatic') },
+          { color: '#34d399', text: t('helpBuilderPreview') },
         ]
       : [
           { color: '#f59e0b', text: t('helpMove') },
@@ -31,7 +34,7 @@ export function HelpModal({
       <ul className="space-y-2">
         {items.map((item) => (
           <li
-            key={item.color}
+            key={item.text}
             className="flex items-start gap-3 rounded-2xl bg-violet-50 px-3 py-2.5 text-sm font-semibold leading-5 text-slate-700"
           >
             <span className="mt-1 h-3 w-3 shrink-0 rounded-full" style={{ background: item.color }} />

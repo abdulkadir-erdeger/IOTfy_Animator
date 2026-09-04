@@ -1,5 +1,5 @@
 import type { FigurePose, FigureTemplate, Joint } from '../types'
-import { cloneJoints, uid } from './ids'
+import { cloneJoints, clonePolygons, uid } from './ids'
 
 function j(
   id: string,
@@ -77,6 +77,7 @@ export function createFigureFromTemplate(
     color: '#111827',
     zOrder,
     joints: cloneJoints(template.joints),
+    polygons: clonePolygons(template.polygons),
   }
 }
 
@@ -94,6 +95,7 @@ export function emptyFigure(x: number, y: number, zOrder: number): FigurePose {
     color: '#111827',
     zOrder,
     joints: [j('origin', null, 0, 0)],
+    polygons: [],
   }
 }
 
@@ -101,5 +103,6 @@ export function cloneFigure(figure: FigurePose): FigurePose {
   return {
     ...figure,
     joints: cloneJoints(figure.joints),
+    polygons: clonePolygons(figure.polygons),
   }
 }

@@ -13,10 +13,18 @@ interface StageCanvasProps {
   showHandles: boolean
   selectedFigureId: string | null
   selectedJointId: string | null
+  selectedPolygonId?: string | null
   builder?: boolean
-  onPointerEmpty?: () => void
+  lockDrag?: boolean
+  highlight?: boolean
+  branchIds?: string[]
+  polygonDraft?: string[]
+  showStaticHandles?: boolean
+  onPointerEmpty?: (x: number, y: number) => void
   onFigurePointerDown?: (figureId: string) => void
   onJointPointerDown?: (figureId: string, jointId: string, event: PointerEvent) => void
+  onSegmentPointerDown?: (figureId: string, jointId: string, event: PointerEvent) => void
+  onPolygonPointerDown?: (figureId: string, polygonId: string, event: PointerEvent) => void
   onPointerMove?: (x: number, y: number) => void
   onPointerUp?: () => void
 }
@@ -41,10 +49,18 @@ export function StageCanvas({
   showHandles,
   selectedFigureId,
   selectedJointId,
+  selectedPolygonId = null,
   builder = false,
+  lockDrag = false,
+  highlight = false,
+  branchIds,
+  polygonDraft,
+  showStaticHandles = true,
   onPointerEmpty,
   onFigurePointerDown,
   onJointPointerDown,
+  onSegmentPointerDown,
+  onPolygonPointerDown,
   onPointerMove,
   onPointerUp,
 }: StageCanvasProps) {
@@ -142,7 +158,8 @@ export function StageCanvas({
             onPointerDown={(event) => {
               if (dragging.current) return
               event.preventDefault()
-              onPointerEmpty?.()
+              const point = clientToSvgPoint(svgRef.current, event, width, height)
+              onPointerEmpty?.(point.x, point.y)
             }}
           />
           <rect
@@ -167,9 +184,16 @@ export function StageCanvas({
               showHandles={showHandles}
               selected={figure.id === selectedFigureId}
               selectedJointId={figure.id === selectedFigureId ? selectedJointId : null}
+              selectedPolygonId={figure.id === selectedFigureId ? selectedPolygonId : null}
+              highlight={highlight}
+              branchIds={figure.id === selectedFigureId ? branchIds : undefined}
+              polygonDraft={figure.id === selectedFigureId ? polygonDraft : undefined}
+              showStaticHandles={showStaticHandles}
               onFigurePointerDown={onFigurePointerDown}
+              onSegmentPointerDown={onSegmentPointerDown}
+              onPolygonPointerDown={onPolygonPointerDown}
               onJointPointerDown={(figureId, jointId, event) => {
-                beginDrag(event)
+                if (!lockDrag) beginDrag(event)
                 onJointPointerDown?.(figureId, jointId, event)
               }}
             />

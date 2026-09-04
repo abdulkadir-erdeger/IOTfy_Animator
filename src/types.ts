@@ -1,4 +1,6 @@
 export type SegmentKind = 'line' | 'circle' | 'ring' | 'hex' | 'double'
+export type CircleFill = 'solid' | 'white' | 'clear'
+export type LineCap = 'round' | 'square'
 
 export interface Joint {
   id: string
@@ -9,6 +11,18 @@ export interface Joint {
   thickness: number
   visible?: boolean
   dynamic?: boolean
+  fill?: CircleFill
+  cap?: LineCap
+  color?: string
+  opacity?: number
+}
+
+export interface FigurePolygon {
+  id: string
+  jointIds: string[]
+  color?: string
+  opacity?: number
+  zOrder?: number
 }
 
 export interface FigurePose {
@@ -24,6 +38,7 @@ export interface FigurePose {
   color: string
   zOrder: number
   joints: Joint[]
+  polygons?: FigurePolygon[]
 }
 
 export interface Frame {
@@ -35,6 +50,7 @@ export interface FigureTemplate {
   id: string
   name: string
   joints: Joint[]
+  polygons?: FigurePolygon[]
 }
 
 export interface Background {
@@ -57,6 +73,7 @@ export interface Project {
 export interface Selection {
   figureId: string | null
   jointId: string | null
+  polygonId?: string | null
 }
 
 export interface WorldJoint {
@@ -72,6 +89,10 @@ export interface WorldJoint {
   length: number
   visible: boolean
   dynamic: boolean
+  fill: CircleFill
+  cap: LineCap
+  color: string | null
+  opacity: number
 }
 
 export type AppView = 'studio' | 'builder'

@@ -1,4 +1,4 @@
-import type { Joint, SegmentKind } from '../types'
+import type { CircleFill, Joint, LineCap, SegmentKind } from '../types'
 
 export function isJointVisible(joint: Joint): boolean {
   return joint.visible !== false
@@ -55,4 +55,40 @@ export function addLengthForKind(kind: SegmentKind): { length: number; thickness
   if (kind === 'hex') return { length: 24, thickness: 16, angle: -Math.PI / 4 }
   if (kind === 'double') return { length: 42, thickness: 5, angle: -Math.PI / 5 }
   return { length: 40, thickness: 7, angle: -Math.PI / 3 }
+}
+
+export function resolvedFill(joint: Joint): CircleFill {
+  if (joint.kind === 'ring') return joint.fill ?? 'clear'
+  return joint.fill ?? 'solid'
+}
+
+export function resolvedCap(joint: Joint): LineCap {
+  return joint.cap ?? 'round'
+}
+
+export function nextFill(fill: CircleFill): CircleFill {
+  if (fill === 'solid') return 'white'
+  if (fill === 'white') return 'clear'
+  return 'solid'
+}
+
+export function nextCap(cap: LineCap): LineCap {
+  return cap === 'round' ? 'square' : 'round'
+}
+
+export function toggledKind(kind: SegmentKind): SegmentKind {
+  if (kind === 'line' || kind === 'double') return 'circle'
+  return 'line'
+}
+
+export function isCircleLike(kind: SegmentKind): boolean {
+  return kind === 'circle' || kind === 'ring' || kind === 'hex'
+}
+
+export function isLineLike(kind: SegmentKind): boolean {
+  return kind === 'line' || kind === 'double'
+}
+
+export function segmentColor(figureColor: string, joint: { color?: string | null }): string {
+  return joint.color || figureColor
 }
